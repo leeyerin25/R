@@ -1,0 +1,269 @@
+---
+title: "hw02"
+output: html_document
+date: '2022-04-16'
+---
+
+
+```{r}
+time1 <-Sys.time()
+options(warn= -1)
+library(dplyr)
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(car))
+suppressPackageStartupMessages(library(naniar))
+suppressPackageStartupMessages(library(caret))
+
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(skimr))
+
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(ggcorrplot))
+suppressPackageStartupMessages(library(corrplot))
+
+DF <- as.data.frame(read_csv('C:/2022dm2/df2015na.csv'))
+
+dim(DF)
+
+str(DF)
+
+DF <-
+  DF %>% mutate(
+    gnd=factor(gnd),
+    bld=factor(bld),
+    lft=factor(lft, labels=c('N','Y')),
+    smk=factor(smk, labels=c('N','Y')),
+    alc=factor(alc, labels=c('N','Y')))
+str(DF)
+
+vis_miss(DF, sort_miss=TRUE) #결측값확인
+
+sum(complete.cases(DF))/nrow(DF)*100 #결측비율확인
+
+
+c(dim(DF), dim(na.omit(DF)))
+
+#혈액형 기준으로 연속형 계수들(numeric) 분석
+featurePlot(x=DF%>%select_if(is.numeric), y=DF$bld, 
+            plot='box', # 'density' 사용가능
+            scales=list(x=list(relation='free'), y=list(relation='free')))
+
+
+featurePlot(x=DF[,sapply(DF, is.numeric)], y=DF$gnd,
+            plot='box', # 'density' 사용가능
+            scales=list(x=list(relation='free'), y=list(relation='free')))
+
+# ??
+R <- cor(DF[,sapply(DF, is.numeric)], use='pairwise')
+R
+
+#짧게 상관계수 수치 나타남. ht 를 기준으로 수치가 큰게 관계성이 높음
+sort(R[,'ht'], decreasing=TRUE)
+#그림으로 R 표시
+ggcorrplot(R, lab=TRUE, digits=3, lab_size=3)
+corrplot::corrplot.mixed(R, upper='ellipse', order='FPC')
+
+#자료분할
+set.seed(20201708)
+isp <- initial_split(DF, prop=2/3) # rset 반환. $in_id가 itrn임
+TR <- as.data.frame(training(isp)) # dataframe 반환
+TS <- as.data.frame(testing(isp)) # dataframe 반환
+TROUT <- TR %>% dplyr::select(ht)
+TSOUT <- TS %>% dplyr::select(ht)
+head(TSOUT)
+
+#레시피지정
+RC <-   #TR가지고 해볼건데 RC 라고 함.
+  TR %>%
+  recipe(ht~.) %>% 
+  step_impute_median(all_numeric(), -all_outcomes())%>% #연속형
+  step_impute_mode(all_nominal(), -all_outcomes()) %>% #이산형(팩터)
+  step_dummy(all_nominal(), -all_outcomes()) #이산형은 또한 가변수로 만듬
+RC
+
+trCntl <- trainControl(method='cv', number=5) 
+
+#lm 은 선형회귀분석, 이것에 대해 사용가능한 모수 리스트를 보여달라.
+modelLookup('lm')
+#결과를 보니 forleg 에만 true. -> y가 연속형회귀분석이면 사용이 가능.
+
+#예측값 보는 단계 : 
+set.seed(20201708)
+Mlm <- train(RC, data=TR,
+             method='lm', # 선형회귀 지정
+             trControl=trCntl) # metric='RMSE, Rsquared'
+Mlm
+
+#???
+Mlm$bestTune
+
+# 지정한 작업들가지고 -> 데이터돌린후나온 결과분석표 간단히 보여줌
+summary(Mlm$finalModel)
+
+#ht 에 대한 변수의 중요도 그림으로.
+ggplot(varImp(Mlm))
+
+Mlm$finalModel # 최종모형
+Mlm$resample # CV결과
+
+Mlm$results
+
+#내가만든 mlm 모형을 통해 TR을 예측한 예측값인 yhlm 을 TROUT 에 추가하겠다.
+TROUT <- TROUT %>% mutate(yhlm=predict(Mlm, newdata=TR))
+TSOUT <- TSOUT %>% mutate(yhlm=predict(Mlm, newdata=TS))
+head(TSOUT)
+
+
+#성능확인. 오차등 계산하는식을 넣어서 metreg 이란 함수만들고 적용
+metreg <- function(y, yh){
+  #tibble(mse=mean((y-yh)^2), rmse=sqrt(mse), mae=mean(abs(y-yh)), rsq=cor(y, yh)^2)
+  tibble(rmse = rmse_vec(y, yh), # 평균제곱오차의 제곱근
+         mse = rmse^2, # 평균제곱오차
+         mae = mae_vec(y, yh), # 평균절대오차
+         mape = mape_vec(y, yh), # 평균절대백분율오차
+         rsq = rsq_vec(y, yh)) # R제곱
+}
+metreg(TSOUT$ht, TSOUT$yhlm)
+
+g1 <- ggplot(TROUT, aes(x=yhlm, y=ht)) + geom_point()
+g2 <- ggplot(TROUT, aes(x=yhlm, y=ht-yhlm)) + geom_point()
+g3 <- ggplot(TSOUT, aes(x=yhlm, y=ht)) + geom_point()
+g4 <- ggplot(TSOUT, aes(x=yhlm, y=ht-yhlm)) + geom_point()
+grid.arrange(g1,g2,g3,g4, ncol=2)
+
+
+
+
+modelLookup('lmStepAIC')
+set.seed(20201708)
+Mstep <- train(RC, data=TR, # recipe객체, 적합용자료 지정
+               method='lmStepAIC', direction='backward', trace=0, # 방법지정
+               trControl=trCntl) # metric='RMSE, Rsquared'
+Mstep
+
+Mstep$bestTune
+
+#여긴왜 연속형만 나오지?
+summary(Mstep$finalModel)
+
+ggplot(varImp(Mstep))
+
+# Mglm$finalModel # 최종모형
+Mstep$resample
+Mstep$results
+
+TROUT <- TROUT %>% mutate(yhstep=predict(Mstep, newdata=TR))
+TSOUT <- TSOUT %>% mutate(yhstep=predict(Mstep, newdata=TS))
+head(TSOUT)
+
+metreg(TSOUT$ht, TSOUT$yhstep)
+
+g1 <- ggplot(TROUT, aes(x=yhstep, y=ht)) + geom_point()
+g2 <- ggplot(TROUT, aes(x=yhstep, y=ht-yhstep)) + geom_point()
+g3 <- ggplot(TSOUT, aes(x=yhstep, y=ht)) + geom_point()
+g4 <- ggplot(TSOUT, aes(x=yhstep, y=ht-yhstep)) + geom_point()
+grid.arrange(g1,g2,g3,g4, ncol=2)
+
+
+
+#벌점회귀
+
+modelLookup('glmnet') #다 트루나옴 다 쓸수있음
+
+glmnetGrid <- expand.grid(alpha=c(0, 0.5, 1), lambda=seq(0.0, 0.1, by=0.01))
+set.seed(20201708)
+Mglmnet <- train(RC, data=TR, # recipe객체, 적합용자료 지정
+                 method='glmnet', # 방법지정
+                 # tuneGrid=glmnetGrid, # 튜닝범위 사용자지정
+                 tuneLength=5, # 튜닝단계
+                 trControl=trCntl) # 튜닝계획 지정
+
+Mglmnet  #람다와 알파를 넣어 적절한걸 찾음 -> 적절하게 필요없는 변수 배제시키기 위함
+Mglmnet$bestTune
+ggplot(varImp(Mglmnet))
+
+ggplot(Mglmnet)
+plot(Mglmnet$finalModel)
+
+#최적모형의 회귀계수알려줌
+coef(Mglmnet$finalModel, s=Mglmnet$bestTune$lambda)
+
+#위에걸 그림으로, x축은람다.
+plot(Mglmnet$finalModel, xvar='lambda', label=TRUE)
+abline(v=log(Mglmnet$bestTune$lambda), lty=2)
+
+# Mglmnet$finalModels
+Mglmnet$resample
+Mglmnet$results
+
+TROUT <- TROUT %>% mutate(yhglmnet=predict(Mglmnet, newdata=TR))
+TSOUT <- TSOUT %>% mutate(yhglmnet=predict(Mglmnet, newdata=TS))
+head(TSOUT)
+
+metreg(TSOUT$ht, TSOUT$yhglmnet)
+g1 <- ggplot(TROUT, aes(x=yhglmnet, y=ht)) + geom_point()
+g2 <- ggplot(TROUT, aes(x=yhglmnet, y=ht-yhglmnet)) + geom_point()
+g3 <- ggplot(TSOUT, aes(x=yhglmnet, y=ht)) + geom_point()
+g4 <- ggplot(TSOUT, aes(x=yhglmnet, y=ht-yhglmnet)) + geom_point()
+grid.arrange(g1,g2,g3,g4, ncol=2)
+
+
+
+#3개 모형별 성능측도확인!!
+#먼저 TR 에서
+MElm <- metreg(TROUT$ht, TROUT$yhlm)
+MEstep <- metreg(TROUT$ht, TROUT$yhstep)
+MEglmnet <- metreg(TROUT$ht, TROUT$yhglmnet)
+METR <- as.data.frame(rbind(MElm, MEstep, MEglmnet))
+METR <-
+  METR %>% mutate(Model=c('LM','STEP','GLMNET'))
+METR %>% dplyr::arrange(mse) #1등:LM
+METR %>% dplyr::arrange(mae) #1등:LM
+METR %>% dplyr::arrange(desc(rsq)) #1등:STEP
+                        
+#TS
+MElm <- metreg(TSOUT$ht, TSOUT$yhlm)
+MEstep <- metreg(TSOUT$ht, TSOUT$yhstep)
+MEglmnet <- metreg(TSOUT$ht, TSOUT$yhglmnet)
+METS <-
+  as.data.frame(rbind(MElm, MEstep, MEglmnet))
+METS <-
+  METS %>% mutate(Model=c('LM','STEP','GLMNET'))
+
+METS %>% dplyr::arrange(mse) #1등 STEP
+METS %>% dplyr::arrange(mae)#1등 STEP
+METS %>% dplyr::arrange(desc(rsq))#1등 STEP
+
+#TR 과 TS 묶어서 한번에 표시
+ME <- rbind(METR, METS)
+ME <- ME %>% mutate(TRTS=rep(c('TR','TS'), each=3))
+ME
+
+ggplot(ME, aes(x=Model, y=mse, col=TRTS, fill=TRTS)) +
+  geom_bar(stat='identity', position='dodge')
+
+
+resamp <- resamples(list(LM = Mlm,
+                         STEP = Mstep,
+                         GLMNET = Mglmnet))
+# trCntrl에 의한 평가결과
+summary(resamp) 
+
+# 상자그림 (ROC(AUC), Sens, Spec)
+bwplot(resamp)
+bwplot(resamp, metric='Rsquared') #위에게 안보일때 하나만 확대하는법
+
+
+#최종모형!
+
+finCntl <- trainControl(method='none')
+Mfin <- train(RC, data=TR, method='glmnet',
+              tuneGrid=Mglmnet$bestTune,
+              trControl=finCntl)
+head(predict(Mfin, TS))
+
+time2 <- Sys.time() # time1
+time2-time1
+
+```
