@@ -1,0 +1,193 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-05-13'
+---
+
+```{r}
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(skimr))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(car))
+suppressPackageStartupMessages(library(naniar))
+
+suppressPackageStartupMessages(library(ggcorrplot))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(glmnet))
+library(MASS) 
+library(pROC)
+
+DF <- as.data.frame(read_csv('C:/2022dm2/gss2018trump.csv'))
+
+head(DF)
+str(DF)
+
+DF <-
+  DF %>% mutate(
+    race=factor(race),
+    class=factor(class),
+    sex=factor(sex),
+    marital=factor(marital),
+    trump=factor(trump)
+  )
+
+vis_miss(DF, sort_miss=TRUE)
+
+#2.간단탐색
+featurePlot(x=DF%>%select_if(is.numeric), y=DF$trump,
+            plot='box',
+            scales=list(x=list(relation='free'), y=list(relation='free')))
+
+#3.분할
+set.seed(20201708)
+isp <- initial_split(DF, prop=2/3) 
+TR <- as.data.frame(training(isp)) 
+TS <- as.data.frame(testing(isp)) 
+TROUT <- TR %>% dplyr::select(trump)
+TSOUT <- TS %>% dplyr::select(trump)
+
+head(TROUT)
+
+#4.모형
+#4.1 로지스틱회귀
+
+Mglm <- glm(trump ~ race+class+age+sex+degree+educ+marital+
+            attend+income16+sei10+madeg+padeg+maeduc+paeduc
+            +masei10+pasei10+prestg10, data=TR, family=binomial)
+summary(Mglm)
+
+
+#사후확률예측
+TROUT <- TR
+TROUT <-
+  TROUT %>% mutate(phglm=predict(Mglm, newdata=TR, type='response'),
+                   yhglm=factor(ifelse(phglm>0.5, 'Y','N')))
+head(TROUT)
+
+TSOUT <- TS
+TSOUT <-
+  TSOUT %>% mutate(phglm=predict(Mglm, newdata=TS, type='response'),
+                   yhglm=factor(ifelse(phglm>0.5, 'Y','N')))
+head(TSOUT)
+
+
+
+
+
+
+#4.2 MSEP : stepAIC 
+M<-MASS::stepAIC(Mglm, direction='backward')
+
+#Mglm에서 제외된 변수를 쓰시오
+# class, sei10, masei10, prestg10, paeduc, pasei10  padeg  degree 
+
+
+summary(M)
+
+#MSTEP 사후예측값 추가
+TROUT <- TR
+TROUT <-
+  TROUT %>% mutate(phglm=predict(Mglm, newdata=TR, type='response'),
+                   yhglm=factor(ifelse(phglm>0.5, 'Y','N')),
+                   phmstep=predict(M, newdata=TR, type='response'),
+                   yhmstep=factor(ifelse(phmstep>0.5, 'Y','N')))
+head(TROUT)
+
+TSOUT <- TS
+TSOUT <-
+  TSOUT %>% mutate(phglm=predict(Mglm, newdata=TS, type='response'),
+                   yhglm=factor(ifelse(phglm>0.5, 'Y','N')),
+                   phmstep=predict(M, newdata=TS, type='response'),
+                   yhmstep=factor(ifelse(phmstep>0.5, 'Y','N')))
+head(TSOUT)
+
+
+
+#5 TR,TS 평가
+
+#5.1 TR- Mglm : 오분류표
+confusionMatrix(TROUT$yhglm, TROUT$trump, positive='Y',  mode='everything')
+#ROC 곡선
+TRroc_mglm <- roc(TROUT$trump, TROUT$phglm)
+auc(TRroc_mglm) #roc 면적
+coords(TRroc_mglm, x='best', best.method='youden')
+
+#TR - Mstep
+confusionMatrix(TROUT$yhmstep, TROUT$trump, positive='Y',  mode='everything')
+#ROC 곡선
+TRroc_step <- roc(TROUT$trump, TROUT$phmstep)
+auc(TRroc_step) #roc 면적
+coords(TRroc_step, x='best', best.method='youden')
+
+
+
+
+#5.2 TS- Mglm : 오분류표
+confusionMatrix(TSOUT$yhglm, TSOUT$trump, positive='Y',  mode='everything')
+#ROC 곡선
+TSroc_mglm <- roc(TSOUT$trump, TSOUT$phglm)
+auc(TSroc_mglm) #roc 면적
+coords(TSroc_mglm, x='best', best.method='youden')
+
+#TS - Mstep
+confusionMatrix(TSOUT$yhmstep, TSOUT$trump, positive='Y',  mode='everything')
+#ROC 곡선
+TSroc_step <- roc(TSOUT$trump, TSOUT$phmstep)
+auc(TSroc_step) #roc 면적
+coords(TSroc_step, x='best', best.method='youden')
+
+
+
+
+
+
+library(pROC)
+
+#PR곡선
+#TR Mglm
+par(mfrow=c(1,2))
+# print.thres='best'면
+plot(TRroc_mglm, legacy=TRUE,
+     print.auc=TRUE,
+     print.thres='best', # 최적 컷오프
+     print.thres.best.method='youden') # 컷오프 선정기준: 'youden|closest.topleft
+
+#TR - Mglm : ROC & PR 
+roc_auc_vec(TROUT$trump, TROUT$phglm, event_level='second')
+pr_auc_vec(TROUT$trump, TROUT$phglm, event_level='second')
+roc_auc_vec(TSOUT$trump, TSOUT$phglm, event_level='second')
+pr_auc_vec(TSOUT$trump, TSOUT$phglm, event_level='second')
+
+#TS - Mstep : ROC & PR 
+roc_auc_vec(TROUT$trump, TROUT$phmstep, event_level='second')
+pr_auc_vec(TROUT$trump, TROUT$phmstep, event_level='second')
+roc_auc_vec(TSOUT$trump, TSOUT$phmstep, event_level='second')
+pr_auc_vec(TSOUT$trump, TSOUT$phmstep, event_level='second')
+
+
+# Mglm 그림으로
+g1 <- autoplot(roc_curve(TROUT, 'trump', 'phglm', event_level='second'))
+g2 <- autoplot(roc_curve(TSOUT, 'trump', 'phglm', event_level='second'))
+g3 <- autoplot( pr_curve(TROUT, 'trump', 'phglm', event_level='second'))
+g4 <- autoplot( pr_curve(TSOUT, 'trump', 'phglm', event_level='second'))
+grid.arrange(g1, g2, g3, g4, ncol=2)
+
+#  Mstep 그림으로
+g1_m <- autoplot(roc_curve(TROUT, 'trump', 'phmstep', event_level='second'))
+g2_m <- autoplot(roc_curve(TSOUT, 'trump', 'phmstep', event_level='second'))
+g3_m <- autoplot( pr_curve(TROUT, 'trump', 'phmstep', event_level='second'))
+g4_m <- autoplot( pr_curve(TSOUT, 'trump', 'phmstep', event_level='second'))
+grid.arrange(g1_m, g2_m, g3_m, g4_m, ncol=2)
+
+#5. 최종모형선택
+# Sensitivity 민감도 1등:
+#ts mstep     Sensitivity : 0.5422        Specificity : 0.7820     
+#ts glm       Sensitivity : 0.5542          Specificity : 0.7669 
+#glm 1등!
+
+
+
+```
